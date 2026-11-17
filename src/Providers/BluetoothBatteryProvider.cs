@@ -6,8 +6,8 @@ namespace WirelessBatteryHub.Providers;
 
 public sealed class BluetoothBatteryProvider : IBatteryProvider
 {
-    public string ProviderName => "Bluetooth";
-    public bool CanHandle(string vidPidKey) => false; // Сканируется через SetupAPI
+    public string ProviderName => "Bluetooth / Windows HID";
+    public bool CanHandle(string vidPidKey) => false;
 
     private const uint DIGCF_PRESENT = 0x00000002;
     private const uint DIGCF_ALLCLASSES = 0x00000004;
@@ -81,14 +81,15 @@ public sealed class BluetoothBatteryProvider : IBatteryProvider
 
                 byte? conn = GetByteProperty(devSet, ref devInfo, DEVPKEY_IsConnected);
                 bool isConnected = !conn.HasValue || conn.Value != 0;
+                bool isBt = instanceId.StartsWith("BTH", StringComparison.OrdinalIgnoreCase);
 
                 result.Add(new DeviceBatteryInfo
                 {
                     Id = "BT:" + instanceId,
                     Name = name,
                     Kind = DeviceClassifier.GuessByName(name, DeviceKind.Other),
-                    ProtocolName = ProviderName,
-                    ConnectionType = "Bluetooth",
+                    ProtocolName = isBt ? "Bluetooth" : "Windows HID / PnP",
+                    ConnectionType = isBt ? "Bluetooth" : "Windows HID / PnP",
                     BatteryPercent = isConnected ? bat.Value : null,
                     IsConnected = isConnected,
                     StatusNote = isConnected ? "Активно" : "Отключено"
