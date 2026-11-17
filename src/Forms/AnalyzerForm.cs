@@ -40,7 +40,7 @@ public sealed class AnalyzerForm : Form
             Width = 110,
             DropDownStyle = ComboBoxStyle.DropDownList
         };
-        _cmbKind.Items.AddRange(new object[] { "Mouse", "Keyboard" });
+        _cmbKind.Items.AddRange(new object[] { "Mouse", "Keyboard", "Gamepad" });
         _cmbKind.SelectedIndex = 0;
 
         var lbl2 = new Label { Text = "Известный заряд % (0 = искать любое):", Location = new Point(10, 68), AutoSize = true };
