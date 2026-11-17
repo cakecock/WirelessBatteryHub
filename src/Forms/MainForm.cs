@@ -1,3 +1,4 @@
+using Microsoft.Win32;
 using WirelessBatteryHub.Models;
 using WirelessBatteryHub.Services;
 using WinTimer = System.Windows.Forms.Timer;
@@ -28,6 +29,8 @@ public sealed class MainForm : Form
     private readonly CheckBox _chkNotifyLow;
     private readonly NumericUpDown _numLowThreshold;
     private readonly CheckBox _chkNotifyFull;
+    private readonly ComboBox _cmbTrayStyle;
+    private readonly ComboBox _cmbThemeMode;
     private readonly Button _btnRefresh;
     private readonly Button _btnAnalyze;
 
@@ -35,6 +38,7 @@ public sealed class MainForm : Form
     private bool _isExiting;
     private bool _isScanning;
     private bool _suppressSettingsSave;
+    private bool _isDarkUi;
     private List<DeviceBatteryInfo> _devices = new();
 
     public MainForm(bool startMinimized, EventWaitHandle showWindowEvent)
@@ -43,9 +47,10 @@ public sealed class MainForm : Form
         _allowShowWindow = !startMinimized;
 
         Text = "Wireless Battery Hub — Мыши, Клавиатуры, Геймпады";
-        Size = new Size(710, 500);
-        MinimumSize = new Size(600, 420);
+        Size = new Size(730, 535);
+        MinimumSize = new Size(630, 440);
         StartPosition = FormStartPosition.CenterScreen;
+        Icon = TrayIconRenderer.CreateAppWindowIcon();
 
         _ = Handle;
 
@@ -68,6 +73,7 @@ public sealed class MainForm : Form
         _lblSub = new Label
         {
             Text = "Событийный режим (0% фоновой нагрузки) · Правый клик по строке: переименовать или скрыть",
+            Tag = "muted",
             ForeColor = Color.DimGray,
             Dock = DockStyle.Top,
             Height = 24,
@@ -83,15 +89,18 @@ public sealed class MainForm : Form
             MultiSelect = false,
             ContextMenuStrip = _listContextMenu
         };
-        _deviceList.Columns.Add("Устройство", 225);
+        _deviceList.Columns.Add("Устройство", 230);
         _deviceList.Columns.Add("Тип", 95);
-        _deviceList.Columns.Add("Протокол", 160);
+        _deviceList.Columns.Add("Протокол", 165);
         _deviceList.Columns.Add("Заряд", 70);
-        _deviceList.Columns.Add("Статус", 125);
+        _deviceList.Columns.Add("Статус", 130);
         _deviceList.SelectedIndexChanged += OnListSelectionChanged;
+        _deviceList.DrawColumnHeader += OnDrawListColumnHeader;
+        _deviceList.DrawItem += (_, e) => e.DrawDefault = true;
+        _deviceList.DrawSubItem += (_, e) => e.DrawDefault = true;
         _listContextMenu.Opening += OnListContextOpening;
 
-        var bottomPanel = new Panel { Dock = DockStyle.Bottom, Height = 162, Padding = new Padding(12, 6, 12, 8) };
+        var bottomPanel = new Panel { Dock = DockStyle.Bottom, Height = 196, Padding = new Padding(12, 6, 12, 8) };
 
         var settingsFlow = new FlowLayoutPanel
         {
@@ -181,9 +190,40 @@ public sealed class MainForm : Form
         _chkNotifyFull.CheckedChanged += (_, _) => SaveUiSettings();
 
         notifyRow.Controls.AddRange(new Control[] { _chkNotifyLow, _numLowThreshold, _chkNotifyFull });
+
+        var appearanceRow = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.LeftToRight,
+            AutoSize = true,
+            WrapContents = false,
+            Margin = new Padding(0, 4, 0, 0)
+        };
+
+        var lblStyle = new Label { Text = "Значок:", AutoSize = true, Margin = new Padding(3, 6, 4, 0) };
+        _cmbTrayStyle = new ComboBox { Width = 148, DropDownStyle = ComboBoxStyle.DropDownList };
+        _cmbTrayStyle.Items.AddRange(new object[] { "Бейдж (фон + полосы)", "Крупные цифры", "Батарейка" });
+        _cmbTrayStyle.SelectedIndex = Math.Clamp((int)_settings.TrayStyle, 0, 2);
+        _cmbTrayStyle.SelectedIndexChanged += (_, _) =>
+        {
+            SaveUiSettings();
+            SyncTrayIcons();
+        };
+
+        var lblTheme = new Label { Text = "Тема:", AutoSize = true, Margin = new Padding(12, 6, 4, 0) };
+        _cmbThemeMode = new ComboBox { Width = 128, DropDownStyle = ComboBoxStyle.DropDownList };
+        _cmbThemeMode.Items.AddRange(new object[] { "Как в Windows", "Тёмная", "Светлая" });
+        _cmbThemeMode.SelectedIndex = Math.Clamp((int)_settings.ThemeMode, 0, 2);
+        _cmbThemeMode.SelectedIndexChanged += (_, _) =>
+        {
+            SaveUiSettings();
+            ApplyTheme();
+        };
+
+        appearanceRow.Controls.AddRange(new Control[] { lblStyle, _cmbTrayStyle, lblTheme, _cmbThemeMode });
+
         settingsFlow.Controls.AddRange(new Control[]
         {
-            _chkStartup, _chkMinimizeToTray, _chkSeparateTrayIcons, _chkRareTimer, notifyRow
+            _chkStartup, _chkMinimizeToTray, _chkSeparateTrayIcons, _chkRareTimer, notifyRow, appearanceRow
         });
 
         var actionsPanel = new Panel { Dock = DockStyle.Right, Width = 165 };
@@ -204,7 +244,7 @@ public sealed class MainForm : Form
         };
         _btnAnalyze.Click += (_, _) =>
         {
-            using var dlg = new AnalyzerForm();
+            using var dlg = new AnalyzerForm(_isDarkUi);
             dlg.ShowDialog(this);
             _ = ScanAsync();
         };
@@ -225,9 +265,44 @@ public sealed class MainForm : Form
         if (_settings.EnableRareTimer) _rareRefreshTimer.Start();
 
         _watcher = new DeviceArrivalWatcher(Handle, () => _ = ScanAsync());
+        SystemEvents.UserPreferenceChanged += OnSystemThemeChanged;
 
+        ApplyTheme();
         SyncTrayIcons();
         _ = ScanAsync();
+    }
+
+    private void OnSystemThemeChanged(object sender, UserPreferenceChangedEventArgs e)
+    {
+        if (IsDisposed) return;
+        BeginInvoke(() =>
+        {
+            ApplyTheme();
+            SyncTrayIcons();
+        });
+    }
+
+    private void ApplyTheme()
+    {
+        _isDarkUi = ThemeHelper.ShouldUseDarkTheme(_settings.ThemeMode);
+        ThemeHelper.ApplyTitleBarTheme(Handle, _isDarkUi);
+        ThemeHelper.ApplyControlTreeTheme(this, _isDarkUi);
+        UpdateListColors();
+    }
+
+    private void OnDrawListColumnHeader(object? sender, DrawListViewColumnHeaderEventArgs e)
+    {
+        using var bg = new SolidBrush(Color.FromArgb(42, 42, 52));
+        using var border = new Pen(Color.FromArgb(65, 65, 80));
+        using var textBrush = new SolidBrush(Color.FromArgb(230, 232, 240));
+        using var sf = new StringFormat { LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter };
+
+        e.Graphics.FillRectangle(bg, e.Bounds);
+        e.Graphics.DrawLine(border, e.Bounds.Right - 1, e.Bounds.Top, e.Bounds.Right - 1, e.Bounds.Bottom);
+        e.Graphics.DrawLine(border, e.Bounds.Left, e.Bounds.Bottom - 1, e.Bounds.Right, e.Bounds.Bottom - 1);
+
+        var rect = new Rectangle(e.Bounds.X + 6, e.Bounds.Y, Math.Max(1, e.Bounds.Width - 10), e.Bounds.Height);
+        e.Graphics.DrawString(e.Header?.Text ?? "", _deviceList.Font, textBrush, rect, sf);
     }
 
     private void SaveUiSettings()
@@ -239,6 +314,8 @@ public sealed class MainForm : Form
         _settings.NotifyLowBattery = _chkNotifyLow.Checked;
         _settings.LowBatteryThreshold = (int)_numLowThreshold.Value;
         _settings.NotifyFullCharge = _chkNotifyFull.Checked;
+        _settings.TrayStyle = (TrayIconStyle)Math.Clamp(_cmbTrayStyle.SelectedIndex, 0, 2);
+        _settings.ThemeMode = (AppThemeMode)Math.Clamp(_cmbThemeMode.SelectedIndex, 0, 2);
         _settings.Save();
     }
 
@@ -292,6 +369,7 @@ public sealed class MainForm : Form
     private void ExitApplication()
     {
         _isExiting = true;
+        SystemEvents.UserPreferenceChanged -= OnSystemThemeChanged;
         _rareRefreshTimer.Stop();
         _rareRefreshTimer.Dispose();
         _showWaitHandle.Unregister(null);
@@ -352,12 +430,10 @@ public sealed class MainForm : Form
             item.SubItems.Add(d.BatteryPercent.HasValue ? $"{d.BatteryPercent}%" : "--");
             item.SubItems.Add(d.StatusNote);
 
-            if (!d.IsConnected || hidden) item.ForeColor = Color.Gray;
-            else if (d.IsSleeping) item.ForeColor = Color.DimGray;
-
             if (d.Id == _settings.PrimaryDeviceId) item.Selected = true;
             _deviceList.Items.Add(item);
         }
+        UpdateListColors();
         _deviceList.EndUpdate();
 
         _lblHeadline.Text = visibleConnected.Count == 0
@@ -366,6 +442,24 @@ public sealed class MainForm : Form
                 $"{GetDisplayName(d)}: {(d.BatteryPercent.HasValue ? d.BatteryPercent + "%" : "--")}"));
 
         SyncTrayIcons();
+    }
+
+    private void UpdateListColors()
+    {
+        foreach (ListViewItem item in _deviceList.Items)
+        {
+            if (item.Tag is not string id) continue;
+            DeviceBatteryInfo? d = _devices.FirstOrDefault(x => x.Id == id);
+            if (d == null) continue;
+
+            bool hidden = _settings.HiddenDeviceIds.Contains(d.Id);
+            if (!d.IsConnected || hidden)
+                item.ForeColor = _isDarkUi ? Color.FromArgb(120, 122, 132) : Color.Gray;
+            else if (d.IsSleeping)
+                item.ForeColor = _isDarkUi ? Color.FromArgb(160, 165, 175) : Color.DimGray;
+            else
+                item.ForeColor = _isDarkUi ? Color.FromArgb(236, 236, 242) : SystemColors.WindowText;
+        }
     }
 
     private void SyncTrayIcons()
@@ -435,7 +529,6 @@ public sealed class MainForm : Form
             int pct = d.BatteryPercent.Value;
             string name = GetDisplayName(d);
 
-            // Низкий заряд
             if (_settings.NotifyLowBattery && !d.IsCharging && pct <= _settings.LowBatteryThreshold)
             {
                 if (_lowNotified.Add(d.Id))
@@ -452,7 +545,6 @@ public sealed class MainForm : Form
                 _lowNotified.Remove(d.Id);
             }
 
-            // Полная зарядка
             if (_settings.NotifyFullCharge && d.IsCharging && pct >= 100)
             {
                 if (_fullNotified.Add(d.Id))
@@ -482,7 +574,8 @@ public sealed class MainForm : Form
         }
 
         ni.Text = tooltip.Length > 63 ? tooltip[..60] + "..." : tooltip;
-        Icon newIcon = TrayIconRenderer.CreateBadgeIcon(pct, charging, kind, isSleeping);
+        bool darkTaskbar = ThemeHelper.IsWindowsDarkTaskbar();
+        Icon newIcon = TrayIconRenderer.CreateBadgeIcon(pct, charging, kind, isSleeping, _settings.TrayStyle, darkTaskbar);
         Icon? oldIcon = ni.Icon;
         ni.Icon = newIcon;
         oldIcon?.Dispose();
@@ -575,8 +668,77 @@ public sealed class MainForm : Form
         {
             string? input = PromptInput("Переименовать устройство",
                 "Введите короткое имя (оставьте пустым для сброса):",
-                GetDisplayName(dev));
+                GetDisplayName(dev),
+                _isDarkUi);
             if (input == null) return;
 
             if (string.IsNullOrWhiteSpace(input))
-          
+                _settings.CustomNames.Remove(dev.Id);
+            else
+                _settings.CustomNames[dev.Id] = input.Trim();
+
+            _settings.Save();
+            UpdateUi();
+        };
+
+        bool isHidden = _settings.HiddenDeviceIds.Contains(dev.Id);
+        var hideItem = new ToolStripMenuItem(isHidden ? "Показывать в трее" : "Скрыть из трея");
+        hideItem.Click += (_, _) =>
+        {
+            if (isHidden) _settings.HiddenDeviceIds.Remove(dev.Id);
+            else _settings.HiddenDeviceIds.Add(dev.Id);
+            _settings.Save();
+            UpdateUi();
+        };
+
+        _listContextMenu.Items.Add(renameItem);
+        _listContextMenu.Items.Add(hideItem);
+    }
+
+    private void OnListSelectionChanged(object? sender, EventArgs e)
+    {
+        if (_deviceList.SelectedItems.Count == 0) return;
+        if (_deviceList.SelectedItems[0].Tag is string id && id != _settings.PrimaryDeviceId)
+        {
+            _settings.PrimaryDeviceId = id;
+            _settings.Save();
+            if (!_chkSeparateTrayIcons.Checked) SyncTrayIcons();
+        }
+    }
+
+    private static string? PromptInput(string title, string prompt, string defaultVal, bool dark)
+    {
+        using var form = new Form
+        {
+            Width = 380,
+            Height = 155,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            Text = title,
+            StartPosition = FormStartPosition.CenterParent,
+            MaximizeBox = false,
+            MinimizeBox = false
+        };
+
+        var lbl = new Label { Left = 14, Top = 14, Width = 335, Text = prompt };
+        var txt = new TextBox { Left = 14, Top = 40, Width = 335, Text = defaultVal };
+        var btnOk = new Button { Text = "ОК", Left = 190, Width = 75, Top = 76, DialogResult = DialogResult.OK };
+        var btnCancel = new Button { Text = "Отмена", Left = 274, Width = 75, Top = 76, DialogResult = DialogResult.Cancel };
+
+        form.Controls.AddRange(new Control[] { lbl, txt, btnOk, btnCancel });
+        form.AcceptButton = btnOk;
+        form.CancelButton = btnCancel;
+
+        ThemeHelper.ApplyTitleBarTheme(form.Handle, dark);
+        ThemeHelper.ApplyControlTreeTheme(form, dark);
+
+        return form.ShowDialog() == DialogResult.OK ? txt.Text : null;
+    }
+
+    private static string KindToRu(DeviceKind kind) => kind switch
+    {
+        DeviceKind.Mouse => "Мышь",
+        DeviceKind.Keyboard => "Клавиатура",
+        DeviceKind.Gamepad => "Геймпад",
+        _ => "Устройство"
+    };
+}
