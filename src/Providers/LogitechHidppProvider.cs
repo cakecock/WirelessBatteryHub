@@ -141,6 +141,7 @@ public sealed class LogitechHidppProvider : IBatteryProvider
         {
             0 => DeviceKind.Keyboard,
             3 => DeviceKind.Mouse,
+            8 => DeviceKind.Headset,
             _ => null
         };
     }
