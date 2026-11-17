@@ -26,11 +26,11 @@ public static class TrayIconRenderer
             using var bgBrush = new SolidBrush(Color.FromArgb(242, 28, 28, 34));
             g.FillRectangle(bgBrush, 0, 0, w, h);
 
-            // Тонкая верхняя метка типа устройства: бирюзовая для мыши, фиолетовая для клавиатуры
             Color kindColor = kind switch
             {
-                DeviceKind.Mouse => Color.FromArgb(80, 200, 255),
-                DeviceKind.Keyboard => Color.FromArgb(185, 130, 255),
+                DeviceKind.Mouse => Color.FromArgb(80, 200, 255),     // Бирюзовый (Мышь)
+                DeviceKind.Keyboard => Color.FromArgb(185, 130, 255), // Фиолетовый (Клавиатура)
+                DeviceKind.Gamepad => Color.FromArgb(255, 165, 55),   // Золотой (Геймпад)
                 _ => Color.FromArgb(140, 140, 150)
             };
             using (var topBar = new SolidBrush(kindColor))
