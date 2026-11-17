@@ -22,6 +22,8 @@ public sealed class ProtocolAutoEngine : IDisposable
         new KeychronProvider(),
         new SonyGamepadProvider(),
         new NintendoGamepadProvider(),
+        new SteelSeriesHeadsetProvider(),
+        new HyperXHeadsetProvider(),
         new CustomJsonProvider()
     };
 
