@@ -22,6 +22,7 @@ public sealed class ProtocolAutoEngine : IDisposable
         new KeychronProvider(),
         new SonyGamepadProvider(),
         new NintendoGamepadProvider(),
+        new SteelSeriesMouseProvider(),
         new SteelSeriesHeadsetProvider(),
         new HyperXHeadsetProvider(),
         new CustomJsonProvider()
@@ -40,13 +41,10 @@ public sealed class ProtocolAutoEngine : IDisposable
     {
         var results = new List<DeviceBatteryInfo>();
 
-        // 1. Bluetooth
         try { results.AddRange(_btProvider.ReadDevices()); } catch { }
 
-        // 2. Пассивные слушатели
         _passiveManager.SyncListeners();
 
-        // 3. USB HID устройства
         var presentVidPids = DeviceList.Local.GetHidDevices()
             .Select(d => $"{d.VendorID:X4}:{d.ProductID:X4}")
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -86,7 +84,6 @@ public sealed class ProtocolAutoEngine : IDisposable
 
         if (cacheDirty) SaveCache(_vidPidCache);
 
-        // 4. Пассивные устройства
         var activeVidPids = new HashSet<string>(
             results.Where(r => !string.IsNullOrEmpty(r.VidPid)).Select(r => r.VidPid!),
             StringComparer.OrdinalIgnoreCase);
@@ -97,14 +94,13 @@ public sealed class ProtocolAutoEngine : IDisposable
                 results.Add(p);
         }
 
-        // 5. XInput-геймпады
         try
         {
             var xinputs = _xinputProvider.ReadDevices();
             bool hasXboxBt = results.Any(r =>
                 r.IsConnected &&
                 r.Kind == DeviceKind.Gamepad &&
-                r.ProtocolName == "Bluetooth" &&
+                r.ProtocolName.Contains("Bluetooth", StringComparison.OrdinalIgnoreCase) &&
                 r.Name.Contains("xbox", StringComparison.OrdinalIgnoreCase));
 
             bool hasXboxDongle = presentVidPids.Contains("045E:02FE") || presentVidPids.Contains("045E:02E6");
@@ -114,7 +110,6 @@ public sealed class ProtocolAutoEngine : IDisposable
         }
         catch { }
 
-        // 6. Режим «сна» для 2.4 ГГц: запоминаем валидный %, и если донгл всё ещё в USB, но мышь уснула — не теряем %
         for (int i = 0; i < results.Count; i++)
         {
             DeviceBatteryInfo d = results[i];
@@ -137,15 +132,9 @@ public sealed class ProtocolAutoEngine : IDisposable
 
             DeviceBatteryInfo prev = _lastKnownUsb[cachedId];
             if (prev.VidPid != null && presentVidPids.Contains(prev.VidPid))
-            {
-                // Донгл физически в ПК, просто само устройство уснуло
                 results.Add(CloneAsSleeping(prev));
-            }
             else
-            {
-                // Донгл вытащили — удаляем из памяти сна
                 _lastKnownUsb.Remove(cachedId);
-            }
         }
 
         return results;
