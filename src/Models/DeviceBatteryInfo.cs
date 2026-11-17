@@ -19,6 +19,7 @@ public sealed class DeviceBatteryInfo
     public int? BatteryPercent { get; init; }
     public bool IsConnected { get; init; }
     public bool IsCharging { get; init; }
+    public bool IsSleeping { get; init; }
     public string StatusNote { get; init; } = string.Empty;
 }
 
@@ -27,8 +28,8 @@ public sealed class CustomProtocolRule
     public string Name { get; set; } = "Custom Device";
     public string Vid { get; set; } = "";
     public string Pid { get; set; } = "";
-    public string Kind { get; set; } = "Mouse"; // Mouse | Keyboard | Gamepad | Other
-    public string Mode { get; set; } = "PassiveInput"; // PassiveInput | OutputQuery | FeatureQuery
+    public string Kind { get; set; } = "Mouse";
+    public string Mode { get; set; } = "PassiveInput";
     public string UsagePageHex { get; set; } = "";
     public string RequestHex { get; set; } = "";
     public string ResponsePrefixHex { get; set; } = "";
