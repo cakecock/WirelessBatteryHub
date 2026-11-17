@@ -8,21 +8,23 @@ namespace WirelessBatteryHub.Services;
 public sealed class PassiveHidManager : IDisposable
 {
     private readonly ConcurrentDictionary<string, DeviceBatteryInfo> _latest = new();
+    private readonly ConcurrentDictionary<string, byte> _openedPaths = new(StringComparer.OrdinalIgnoreCase);
     private readonly CancellationTokenSource _cts = new();
-    private readonly List<Task> _workers = new();
-    private readonly HashSet<string> _openedPaths = new(StringComparer.OrdinalIgnoreCase);
 
     public IReadOnlyList<DeviceBatteryInfo> GetSnapshot() => _latest.Values.ToList();
 
-    public void EnsureListenersStarted()
+    public void SyncListeners()
     {
         List<CustomProtocolRule> passiveRules = CustomJsonProvider.LoadRules()
             .Where(r => r.Mode.Equals("PassiveInput", StringComparison.OrdinalIgnoreCase))
             .ToList();
 
+        var presentPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         foreach (HidDevice dev in DeviceList.Local.GetHidDevices())
         {
-            if (_openedPaths.Contains(dev.DevicePath)) continue;
+            presentPaths.Add(dev.DevicePath);
+            if (_openedPaths.ContainsKey(dev.DevicePath)) continue;
 
             string vidHex = $"{dev.VendorID:X4}";
             string pidHex = $"{dev.ProductID:X4}";
@@ -38,8 +40,21 @@ public sealed class PassiveHidManager : IDisposable
             try { inLen = dev.GetMaxInputReportLength(); } catch { continue; }
             if (inLen <= rule.BatteryByteIndex) continue;
 
-            _openedPaths.Add(dev.DevicePath);
-            _workers.Add(Task.Run(() => ListenLoop(dev, vidPid, rule, _cts.Token)));
+            if (_openedPaths.TryAdd(dev.DevicePath, 1))
+            {
+                _ = Task.Run(() => ListenLoop(dev, vidPid, rule, _cts.Token));
+            }
+        }
+
+        // Удаляем отключённые донглы из списка
+        foreach (string trackedId in _latest.Keys.ToList())
+        {
+            if (_latest.TryGetValue(trackedId, out var info) && info.VidPid != null)
+            {
+                bool stillPresent = DeviceList.Local.GetHidDevices()
+                    .Any(d => $"{d.VendorID:X4}:{d.ProductID:X4}".Equals(info.VidPid, StringComparison.OrdinalIgnoreCase));
+                if (!stillPresent) _latest.TryRemove(trackedId, out _);
+            }
         }
     }
 
@@ -48,28 +63,31 @@ public sealed class PassiveHidManager : IDisposable
         byte[] prefix = CustomJsonProvider.ParseHex(rule.ResponsePrefixHex);
         Enum.TryParse(rule.Kind, true, out DeviceKind kind);
         string name = SafeName(dev, rule.Name, vidPid);
+        string deviceKey = $"PASSIVE:{vidPid}";
 
-        // Регистрируем устройство в статусе ожидания движения/активности
-        _latest.TryAdd($"PASSIVE:{vidPid}", new DeviceBatteryInfo
+        _latest.TryAdd(deviceKey, new DeviceBatteryInfo
         {
-            Id = $"PASSIVE:{vidPid}",
+            Id = deviceKey,
             Name = name,
             Kind = kind,
             ProtocolName = "Passive HID",
-            ConnectionType = "2.4 ГГц (Ожидание пакета)",
+            ConnectionType = "2.4 ГГц (Ожидание)",
             VidPid = vidPid,
             BatteryPercent = null,
             IsConnected = true,
             StatusNote = "Пошевелите устройство"
         });
 
-        while (!ct.IsCancellationRequested)
+        try
         {
-            try
+            while (!ct.IsCancellationRequested)
             {
                 if (!dev.TryOpen(out HidStream stream))
                 {
-                    Thread.Sleep(2000);
+                    // Если устройство отключено — выходим
+                    if (!DeviceList.Local.GetHidDevices().Any(d => d.DevicePath.Equals(dev.DevicePath, StringComparison.OrdinalIgnoreCase)))
+                        break;
+                    Thread.Sleep(1500);
                     continue;
                 }
 
@@ -93,9 +111,9 @@ public sealed class PassiveHidManager : IDisposable
 
                             bool chg = rule.ChargingByteIndex >= 0 && n > rule.ChargingByteIndex && buf[rule.ChargingByteIndex] != 0;
 
-                            _latest[$"PASSIVE:{vidPid}"] = new DeviceBatteryInfo
+                            _latest[deviceKey] = new DeviceBatteryInfo
                             {
-                                Id = $"PASSIVE:{vidPid}",
+                                Id = deviceKey,
                                 Name = name,
                                 Kind = kind,
                                 ProtocolName = "Passive HID",
@@ -111,10 +129,12 @@ public sealed class PassiveHidManager : IDisposable
                     }
                 }
             }
-            catch
-            {
-                Thread.Sleep(1500);
-            }
+        }
+        catch { }
+        finally
+        {
+            _openedPaths.TryRemove(dev.DevicePath, out _);
+            _latest.TryRemove(deviceKey, out _);
         }
     }
 
@@ -132,7 +152,6 @@ public sealed class PassiveHidManager : IDisposable
     public void Dispose()
     {
         _cts.Cancel();
-        try { Task.WaitAll(_workers.ToArray(), 500); } catch { }
         _cts.Dispose();
     }
 }
