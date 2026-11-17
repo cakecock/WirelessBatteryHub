@@ -26,6 +26,7 @@ public sealed class ProtocolAutoEngine : IDisposable
     };
 
     private readonly PassiveHidManager _passiveManager = new();
+    private readonly Dictionary<string, DeviceBatteryInfo> _lastKnownUsb = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, string> _vidPidCache;
 
     public ProtocolAutoEngine()
@@ -37,17 +38,17 @@ public sealed class ProtocolAutoEngine : IDisposable
     {
         var results = new List<DeviceBatteryInfo>();
 
-        // 1. Bluetooth (мыши, клавиатуры, геймпады)
+        // 1. Bluetooth
         try { results.AddRange(_btProvider.ReadDevices()); } catch { }
 
-        // 2. Пассивные слушатели (Beken / Attack Shark / Custom JSON)
+        // 2. Пассивные слушатели
         _passiveManager.SyncListeners();
 
         // 3. USB HID устройства
         var presentVidPids = DeviceList.Local.GetHidDevices()
             .Select(d => $"{d.VendorID:X4}:{d.ProductID:X4}")
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         bool cacheDirty = false;
 
@@ -94,7 +95,7 @@ public sealed class ProtocolAutoEngine : IDisposable
                 results.Add(p);
         }
 
-        // 5. XInput-геймпады (Xbox Wireless Adapter, 8BitDo, GameSir и др.)
+        // 5. XInput-геймпады
         try
         {
             var xinputs = _xinputProvider.ReadDevices();
@@ -104,24 +105,64 @@ public sealed class ProtocolAutoEngine : IDisposable
                 r.ProtocolName == "Bluetooth" &&
                 r.Name.Contains("xbox", StringComparison.OrdinalIgnoreCase));
 
-            bool hasXboxDongle = presentVidPids.Any(v =>
-                v.Equals("045E:02FE", StringComparison.OrdinalIgnoreCase) ||
-                v.Equals("045E:02E6", StringComparison.OrdinalIgnoreCase));
+            bool hasXboxDongle = presentVidPids.Contains("045E:02FE") || presentVidPids.Contains("045E:02E6");
 
-            // Если Xbox геймпад подключён по Bluetooth и уже отдал точный % — не дублируем его грубым шагом XInput
-            if (hasXboxBt && !hasXboxDongle && xinputs.Count == 1)
-            {
-                // Пропускаем дубль XInput
-            }
-            else
-            {
+            if (!(hasXboxBt && !hasXboxDongle && xinputs.Count == 1))
                 results.AddRange(xinputs);
-            }
         }
         catch { }
 
+        // 6. Режим «сна» для 2.4 ГГц: запоминаем валидный %, и если донгл всё ещё в USB, но мышь уснула — не теряем %
+        for (int i = 0; i < results.Count; i++)
+        {
+            DeviceBatteryInfo d = results[i];
+            if (string.IsNullOrEmpty(d.VidPid)) continue;
+
+            if (d.BatteryPercent.HasValue)
+            {
+                _lastKnownUsb[d.Id] = d;
+            }
+            else if (_lastKnownUsb.TryGetValue(d.Id, out DeviceBatteryInfo? prev) && prev.BatteryPercent.HasValue)
+            {
+                results[i] = CloneAsSleeping(prev);
+            }
+        }
+
+        var currentIds = results.Select(r => r.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (string cachedId in _lastKnownUsb.Keys.ToList())
+        {
+            if (currentIds.Contains(cachedId)) continue;
+
+            DeviceBatteryInfo prev = _lastKnownUsb[cachedId];
+            if (prev.VidPid != null && presentVidPids.Contains(prev.VidPid))
+            {
+                // Донгл физически в ПК, просто само устройство уснуло
+                results.Add(CloneAsSleeping(prev));
+            }
+            else
+            {
+                // Донгл вытащили — удаляем из памяти сна
+                _lastKnownUsb.Remove(cachedId);
+            }
+        }
+
         return results;
     }
+
+    private static DeviceBatteryInfo CloneAsSleeping(DeviceBatteryInfo prev) => new()
+    {
+        Id = prev.Id,
+        Name = prev.Name,
+        Kind = prev.Kind,
+        ProtocolName = prev.ProtocolName,
+        ConnectionType = prev.ConnectionType,
+        VidPid = prev.VidPid,
+        BatteryPercent = prev.BatteryPercent,
+        IsConnected = true,
+        IsCharging = false,
+        IsSleeping = true,
+        StatusNote = prev.BatteryPercent.HasValue ? $"Спит (было {prev.BatteryPercent}%)" : "Спит"
+    };
 
     private static bool SafeCanHandle(IBatteryProvider p, string vidPid)
     {
