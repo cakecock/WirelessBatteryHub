@@ -11,6 +11,7 @@ public sealed class ProtocolAutoEngine : IDisposable
         Path.Combine(AppContext.BaseDirectory, "protocol_cache.json");
 
     private readonly BluetoothBatteryProvider _btProvider = new();
+    private readonly XInputGamepadProvider _xinputProvider = new();
     private readonly IBatteryProvider[] _hidProviders =
     {
         new LogitechHidppProvider(),
@@ -19,6 +20,8 @@ public sealed class ProtocolAutoEngine : IDisposable
         new WLMouseProvider(),
         new AsusRogProvider(),
         new KeychronProvider(),
+        new SonyGamepadProvider(),
+        new NintendoGamepadProvider(),
         new CustomJsonProvider()
     };
 
@@ -34,13 +37,13 @@ public sealed class ProtocolAutoEngine : IDisposable
     {
         var results = new List<DeviceBatteryInfo>();
 
-        // 1. Всегда читаем Bluetooth (мыши, клавиатуры, наушники и др.)
+        // 1. Bluetooth (мыши, клавиатуры, геймпады)
         try { results.AddRange(_btProvider.ReadDevices()); } catch { }
 
-        // 2. Запускаем пассивные слушатели (Beken / Attack Shark и правила protocols.json)
-        _passiveManager.EnsureListenersStarted();
+        // 2. Пассивные слушатели (Beken / Attack Shark / Custom JSON)
+        _passiveManager.SyncListeners();
 
-        // 3. Собираем все подключённые USB VID:PID
+        // 3. USB HID устройства
         var presentVidPids = DeviceList.Local.GetHidDevices()
             .Select(d => $"{d.VendorID:X4}:{d.ProductID:X4}")
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -50,7 +53,6 @@ public sealed class ProtocolAutoEngine : IDisposable
 
         foreach (string vidPid in presentVidPids)
         {
-            // Если уже есть закэшированный провайдер — сначала пробуем его
             if (_vidPidCache.TryGetValue(vidPid, out string? cachedName))
             {
                 IBatteryProvider? cachedProv = _hidProviders.FirstOrDefault(p => p.ProviderName == cachedName);
@@ -65,11 +67,9 @@ public sealed class ProtocolAutoEngine : IDisposable
                 }
             }
 
-            // Иначе автоподбор среди провайдеров, подходящих под отпечаток VID:PID / дескриптора
             foreach (IBatteryProvider prov in _hidProviders)
             {
                 if (!SafeCanHandle(prov, vidPid)) continue;
-
                 var found = SafeRead(prov, vidPid);
                 if (found.Count > 0)
                 {
@@ -83,7 +83,7 @@ public sealed class ProtocolAutoEngine : IDisposable
 
         if (cacheDirty) SaveCache(_vidPidCache);
 
-        // 4. Добавляем данные от пассивных слушателей (если активный опрос уже не нашёл это VID:PID)
+        // 4. Пассивные устройства
         var activeVidPids = new HashSet<string>(
             results.Where(r => !string.IsNullOrEmpty(r.VidPid)).Select(r => r.VidPid!),
             StringComparer.OrdinalIgnoreCase);
@@ -93,6 +93,32 @@ public sealed class ProtocolAutoEngine : IDisposable
             if (p.VidPid == null || !activeVidPids.Contains(p.VidPid))
                 results.Add(p);
         }
+
+        // 5. XInput-геймпады (Xbox Wireless Adapter, 8BitDo, GameSir и др.)
+        try
+        {
+            var xinputs = _xinputProvider.ReadDevices();
+            bool hasXboxBt = results.Any(r =>
+                r.IsConnected &&
+                r.Kind == DeviceKind.Gamepad &&
+                r.ProtocolName == "Bluetooth" &&
+                r.Name.Contains("xbox", StringComparison.OrdinalIgnoreCase));
+
+            bool hasXboxDongle = presentVidPids.Any(v =>
+                v.Equals("045E:02FE", StringComparison.OrdinalIgnoreCase) ||
+                v.Equals("045E:02E6", StringComparison.OrdinalIgnoreCase));
+
+            // Если Xbox геймпад подключён по Bluetooth и уже отдал точный % — не дублируем его грубым шагом XInput
+            if (hasXboxBt && !hasXboxDongle && xinputs.Count == 1)
+            {
+                // Пропускаем дубль XInput
+            }
+            else
+            {
+                results.AddRange(xinputs);
+            }
+        }
+        catch { }
 
         return results;
     }
