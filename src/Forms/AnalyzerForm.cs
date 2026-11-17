@@ -1,3 +1,4 @@
+using System.Text;
 using HidSharp;
 using WirelessBatteryHub.Models;
 using WirelessBatteryHub.Providers;
@@ -12,6 +13,7 @@ public sealed class AnalyzerForm : Form
     private readonly NumericUpDown _numExpectedPct;
     private readonly Button _btnToggleListen;
     private readonly Button _btnSaveRule;
+    private readonly Button _btnCopyReport;
     private readonly TextBox _txtLog;
 
     private readonly List<HidDevice> _vendorDevices = new();
@@ -20,8 +22,8 @@ public sealed class AnalyzerForm : Form
 
     public AnalyzerForm(bool darkTheme = false)
     {
-        Text = "Анализатор неизвестной мыши / клавиатуры / геймпада (HID)";
-        Size = new Size(720, 500);
+        Text = "Анализатор неизвестной мыши / клавиатуры / геймпада / гарнитуры";
+        Size = new Size(760, 520);
         StartPosition = FormStartPosition.CenterParent;
         Icon = TrayIconRenderer.CreateAppWindowIcon();
 
@@ -31,32 +33,36 @@ public sealed class AnalyzerForm : Form
         _cmbInterfaces = new ComboBox
         {
             Location = new Point(10, 32),
-            Width = 470,
+            Width = 530,
             DropDownStyle = ComboBoxStyle.DropDownList
         };
 
-        var lblKind = new Label { Text = "Тип:", Location = new Point(490, 12), AutoSize = true };
+        var lblKind = new Label { Text = "Тип:", Location = new Point(550, 12), AutoSize = true };
         _cmbKind = new ComboBox
         {
-            Location = new Point(490, 32),
-            Width = 110,
+            Location = new Point(550, 32),
+            Width = 175,
             DropDownStyle = ComboBoxStyle.DropDownList
         };
         _cmbKind.Items.AddRange(new object[] { "Mouse", "Keyboard", "Gamepad", "Headset" });
         _cmbKind.SelectedIndex = 0;
 
-        var lbl2 = new Label { Text = "Известный заряд % (0 = искать любое):", Location = new Point(10, 68), AutoSize = true };
-        _numExpectedPct = new NumericUpDown { Location = new Point(235, 65), Width = 65, Minimum = 0, Maximum = 100, Value = 0 };
+        var lbl2 = new Label { Text = "Известный % (0 = любое):", Location = new Point(10, 68), AutoSize = true };
+        _numExpectedPct = new NumericUpDown { Location = new Point(170, 65), Width = 60, Minimum = 0, Maximum = 100, Value = 0 };
 
-        _btnToggleListen = new Button { Text = "Слушать пакеты", Location = new Point(315, 63), Size = new Size(135, 28) };
+        _btnToggleListen = new Button { Text = "Слушать пакеты", Location = new Point(242, 63), Size = new Size(135, 28) };
         _btnToggleListen.Click += OnToggleListen;
 
-        _btnSaveRule = new Button { Text = "Сохранить в protocols.json", Location = new Point(460, 63), Size = new Size(210, 28), Enabled = false };
+        _btnSaveRule = new Button { Text = "Сохранить в JSON", Location = new Point(385, 63), Size = new Size(155, 28), Enabled = false };
         _btnSaveRule.Click += OnSaveRule;
+
+        _btnCopyReport = new Button { Text = "Копировать отчёт", Location = new Point(548, 63), Size = new Size(177, 28) };
+        _btnCopyReport.Click += OnCopyReport;
 
         topPanel.Controls.AddRange(new Control[]
         {
-            lbl1, _cmbInterfaces, lblKind, _cmbKind, lbl2, _numExpectedPct, _btnToggleListen, _btnSaveRule
+            lbl1, _cmbInterfaces, lblKind, _cmbKind, lbl2, _numExpectedPct,
+            _btnToggleListen, _btnSaveRule, _btnCopyReport
         });
 
         _txtLog = new TextBox
@@ -69,7 +75,8 @@ public sealed class AnalyzerForm : Form
             Font = new Font("Consolas", 9.5f),
             Text = "1. Выберите Vendor-интерфейс вашего донгла.\r\n" +
                    "2. Если знаете текущий % из родного софта — укажите его.\r\n" +
-                   "3. Нажмите «Слушать пакеты» и пошевелите мышкой / нажмите клавиши.\r\n\r\n"
+                   "3. Нажмите «Слушать пакеты» и пошевелите устройством.\r\n" +
+                   "4. Если автоопределение не сработало — нажмите «Копировать отчёт».\r\n\r\n"
         };
 
         Controls.Add(_txtLog);
@@ -97,7 +104,7 @@ public sealed class AnalyzerForm : Form
                 string name = dev.GetProductName()?.Trim() ?? "HID Device";
                 string usageStr = string.Join(",", usages.Select(u => $"{u >> 16:X4}:{u & 0xFFFF:X4}").Distinct());
                 _vendorDevices.Add(dev);
-                _cmbInterfaces.Items.Add($"[{dev.VendorID:X4}:{dev.ProductID:X4}] {name} | Usage:{usageStr} | In:{dev.GetMaxInputReportLength()}");
+                _cmbInterfaces.Items.Add($"[{dev.VendorID:X4}:{dev.ProductID:X4}] {name} | Usage:{usageStr} | In:{dev.GetMaxInputReportLength()} Out:{dev.GetMaxOutputReportLength()} Feat:{dev.GetMaxFeatureReportLength()}");
             }
             catch { }
         }
@@ -201,8 +208,21 @@ public sealed class AnalyzerForm : Form
     {
         if (_detectedDraft == null) return;
         CustomJsonProvider.AddOrUpdateRule(_detectedDraft);
-        MessageBox.Show($"Правило для {_detectedDraft.Name} сохранено в protocols.json!\nНажмите «Обновить» в главном окне.",
+        MessageBox.Show($"Правило для {_detectedDraft.Name} сохранено в protocols.json!",
             "Готово", MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
+
+    private void OnCopyReport(object? sender, EventArgs e)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("=== WirelessBatteryHub Diagnostics ===");
+        foreach (object item in _cmbInterfaces.Items)
+            sb.AppendLine(item.ToString());
+        sb.AppendLine("=== Log ===");
+        sb.AppendLine(_txtLog.Text);
+
+        Clipboard.SetText(sb.ToString());
+        MessageBox.Show("Отчёт скопирован в буфер обмена!", "Готово", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     private void AppendLog(string msg)
