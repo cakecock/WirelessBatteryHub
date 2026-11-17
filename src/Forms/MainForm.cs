@@ -35,6 +35,7 @@ public sealed class MainForm : Form
     private readonly ComboBox _cmbThemeMode;
     private readonly Button _btnRefresh;
     private readonly Button _btnAnalyze;
+    private readonly Button _btnUpdates;
 
     private bool _allowShowWindow;
     private bool _isExiting;
@@ -48,8 +49,8 @@ public sealed class MainForm : Form
         _settings = AppSettings.Load();
         _allowShowWindow = !startMinimized;
 
-        Text = "Wireless Battery Hub — Мыши, Клавиатуры, Геймпады, Гарнитуры";
-        Size = new Size(730, 535);
+        Text = $"Wireless Battery Hub v{UpdateChecker.CurrentVersion}";
+        Size = new Size(730, 540);
         MinimumSize = new Size(630, 440);
         StartPosition = FormStartPosition.CenterScreen;
         Icon = TrayIconRenderer.CreateAppWindowIcon();
@@ -233,16 +234,16 @@ public sealed class MainForm : Form
         _btnRefresh = new Button
         {
             Text = "Обновить сейчас",
-            Size = new Size(150, 34),
-            Location = new Point(10, 14)
+            Size = new Size(150, 32),
+            Location = new Point(10, 10)
         };
         _btnRefresh.Click += async (_, _) => await ScanAsync();
 
         _btnAnalyze = new Button
         {
             Text = "HID-Анализатор",
-            Size = new Size(150, 34),
-            Location = new Point(10, 56)
+            Size = new Size(150, 32),
+            Location = new Point(10, 48)
         };
         _btnAnalyze.Click += (_, _) =>
         {
@@ -251,7 +252,23 @@ public sealed class MainForm : Form
             _ = ScanAsync();
         };
 
-        actionsPanel.Controls.AddRange(new Control[] { _btnRefresh, _btnAnalyze });
+        _btnUpdates = new Button
+        {
+            Text = "Обновления",
+            Size = new Size(150, 32),
+            Location = new Point(10, 86)
+        };
+        _btnUpdates.Click += async (_, _) => await UpdateChecker.CheckAsync(this);
+
+        var lblVersion = new Label
+        {
+            Text = $"Версия v{UpdateChecker.CurrentVersion}",
+            Tag = "muted",
+            AutoSize = true,
+            Location = new Point(12, 128)
+        };
+
+        actionsPanel.Controls.AddRange(new Control[] { _btnRefresh, _btnAnalyze, _btnUpdates, lblVersion });
         bottomPanel.Controls.Add(settingsFlow);
         bottomPanel.Controls.Add(actionsPanel);
 
@@ -649,6 +666,10 @@ public sealed class MainForm : Form
             RebuildTrayMenu(visibleConnected);
         };
         _trayMenu.Items.Add(startupItem);
+
+        var updateItem = new ToolStripMenuItem("Проверить обновления");
+        updateItem.Click += async (_, _) => await UpdateChecker.CheckAsync(this);
+        _trayMenu.Items.Add(updateItem);
 
         _trayMenu.Items.Add(new ToolStripSeparator());
 
