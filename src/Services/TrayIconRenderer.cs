@@ -161,9 +161,10 @@ public static class TrayIconRenderer
 
     private static Color GetKindColor(DeviceKind kind) => kind switch
     {
-        DeviceKind.Mouse => Color.FromArgb(80, 200, 255),
-        DeviceKind.Keyboard => Color.FromArgb(185, 130, 255),
-        DeviceKind.Gamepad => Color.FromArgb(255, 165, 55),
+        DeviceKind.Mouse => Color.FromArgb(80, 200, 255),     // Бирюзовый
+        DeviceKind.Keyboard => Color.FromArgb(185, 130, 255), // Фиолетовый
+        DeviceKind.Gamepad => Color.FromArgb(255, 165, 55),   // Золотой
+        DeviceKind.Headset => Color.FromArgb(245, 110, 175),  // Малиновый (Гарнитура)
         _ => Color.FromArgb(140, 140, 150)
     };
 
