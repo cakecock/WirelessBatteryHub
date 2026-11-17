@@ -7,9 +7,11 @@ namespace WirelessBatteryHub.Forms;
 public sealed class MainForm : Form
 {
     private readonly ProtocolAutoEngine _engine = new();
+    private readonly DeviceArrivalWatcher _watcher;
     private readonly Dictionary<string, NotifyIcon> _trayIcons = new();
     private readonly ContextMenuStrip _trayMenu = new();
-    private readonly WinTimer _pollTimer;
+    private readonly RegisteredWaitHandle _showWaitHandle;
+    private readonly WinTimer _rareRefreshTimer;
 
     private readonly ListView _deviceList;
     private readonly Label _lblHeadline;
@@ -17,6 +19,7 @@ public sealed class MainForm : Form
     private readonly CheckBox _chkStartup;
     private readonly CheckBox _chkMinimizeToTray;
     private readonly CheckBox _chkSeparateTrayIcons;
+    private readonly CheckBox _chkRareTimer;
     private readonly Button _btnRefresh;
     private readonly Button _btnAnalyze;
 
@@ -26,20 +29,27 @@ public sealed class MainForm : Form
     private string? _primaryDeviceId;
     private List<DeviceBatteryInfo> _devices = new();
 
-    public MainForm(bool startMinimized)
+    public MainForm(bool startMinimized, EventWaitHandle showWindowEvent)
     {
         _allowShowWindow = !startMinimized;
 
-        Text = "Wireless Battery Hub — Мыши и Клавиатуры";
-        Size = new Size(640, 440);
-        MinimumSize = new Size(560, 370);
+        Text = "Wireless Battery Hub — Мыши, Клавиатуры, Геймпады";
+        Size = new Size(680, 470);
+        MinimumSize = new Size(580, 390);
         StartPosition = FormStartPosition.CenterScreen;
 
-        _ = Handle; // Гарантирует работу BeginInvoke при старте в трее
+        _ = Handle; // Инициализируем HWND для WM_DEVICECHANGE даже при скрытом запуске
+
+        _showWaitHandle = ThreadPool.RegisterWaitForSingleObject(
+            showWindowEvent,
+            (_, _) => { if (!IsDisposed) BeginInvoke(RestoreFromTray); },
+            null,
+            Timeout.Infinite,
+            false);
 
         _lblHeadline = new Label
         {
-            Text = "Автоопределение беспроводных устройств...",
+            Text = "Поиск подключённых устройств...",
             Font = new Font("Segoe UI", 13.5f, FontStyle.Bold),
             Dock = DockStyle.Top,
             Height = 36,
@@ -48,7 +58,7 @@ public sealed class MainForm : Form
 
         _lblSub = new Label
         {
-            Text = "Bluetooth + 2.4 ГГц (Logitech, Razer, Compx/Nordic, Beken, WLMouse, ASUS ROG, Keychron, JSON)",
+            Text = "Режим без фоновой нагрузки: проверка при старте и подключении новых устройств (USB / Bluetooth)",
             ForeColor = Color.DimGray,
             Dock = DockStyle.Top,
             Height = 24,
@@ -63,20 +73,20 @@ public sealed class MainForm : Form
             GridLines = true,
             MultiSelect = false
         };
-        _deviceList.Columns.Add("Устройство", 210);
+        _deviceList.Columns.Add("Устройство", 220);
         _deviceList.Columns.Add("Тип", 95);
-        _deviceList.Columns.Add("Протокол", 145);
+        _deviceList.Columns.Add("Протокол", 160);
         _deviceList.Columns.Add("Заряд", 70);
-        _deviceList.Columns.Add("Статус", 95);
+        _deviceList.Columns.Add("Статус", 100);
         _deviceList.SelectedIndexChanged += OnListSelectionChanged;
 
-        var bottomPanel = new Panel { Dock = DockStyle.Bottom, Height = 108, Padding = new Padding(12, 8, 12, 8) };
+        var bottomPanel = new Panel { Dock = DockStyle.Bottom, Height = 132, Padding = new Padding(12, 8, 12, 8) };
 
         _chkStartup = new CheckBox
         {
             Text = "Запускать вместе с Windows (свёрнуто в трей)",
             AutoSize = true,
-            Location = new Point(12, 10),
+            Location = new Point(12, 8),
             Checked = StartupManager.IsEnabled()
         };
         _chkStartup.CheckedChanged += (_, _) => StartupManager.SetEnabled(_chkStartup.Checked);
@@ -85,25 +95,38 @@ public sealed class MainForm : Form
         {
             Text = "Сворачивать в трей при закрытии окна",
             AutoSize = true,
-            Location = new Point(12, 36),
+            Location = new Point(12, 34),
             Checked = true
         };
 
         _chkSeparateTrayIcons = new CheckBox
         {
-            Text = "Отдельный значок в трее для каждого устройства (Мышь + Клавиатура)",
+            Text = "Отдельный значок в трее для каждого подключённого устройства",
             AutoSize = true,
-            Location = new Point(12, 62),
+            Location = new Point(12, 60),
             Checked = true
         };
         _chkSeparateTrayIcons.CheckedChanged += (_, _) => SyncTrayIcons();
+
+        _chkRareTimer = new CheckBox
+        {
+            Text = "Подтягивать % заряда раз в 2 минуты (по умолчанию выкл — 0% нагрузки)",
+            AutoSize = true,
+            Location = new Point(12, 86),
+            Checked = false
+        };
+        _chkRareTimer.CheckedChanged += (_, _) =>
+        {
+            if (_chkRareTimer.Checked) _rareRefreshTimer.Start();
+            else _rareRefreshTimer.Stop();
+        };
 
         _btnRefresh = new Button
         {
             Text = "Обновить",
             Size = new Size(100, 30),
             Anchor = AnchorStyles.Top | AnchorStyles.Right,
-            Location = new Point(bottomPanel.Width - 270, 26)
+            Location = new Point(bottomPanel.Width - 270, 36)
         };
         _btnRefresh.Click += async (_, _) => await ScanAsync();
 
@@ -112,7 +135,7 @@ public sealed class MainForm : Form
             Text = "HID-Анализатор",
             Size = new Size(145, 30),
             Anchor = AnchorStyles.Top | AnchorStyles.Right,
-            Location = new Point(bottomPanel.Width - 160, 26)
+            Location = new Point(bottomPanel.Width - 160, 36)
         };
         _btnAnalyze.Click += (_, _) =>
         {
@@ -123,7 +146,7 @@ public sealed class MainForm : Form
 
         bottomPanel.Controls.AddRange(new Control[]
         {
-            _chkStartup, _chkMinimizeToTray, _chkSeparateTrayIcons, _btnRefresh, _btnAnalyze
+            _chkStartup, _chkMinimizeToTray, _chkSeparateTrayIcons, _chkRareTimer, _btnRefresh, _btnAnalyze
         });
 
         Controls.Add(_deviceList);
@@ -131,12 +154,21 @@ public sealed class MainForm : Form
         Controls.Add(_lblHeadline);
         Controls.Add(bottomPanel);
 
-        _pollTimer = new WinTimer { Interval = 20_000 };
-        _pollTimer.Tick += async (_, _) => await ScanAsync();
-        _pollTimer.Start();
+        // Таймер по умолчанию выключен — работает только при включении галочки
+        _rareRefreshTimer = new WinTimer { Interval = 120_000 };
+        _rareRefreshTimer.Tick += async (_, _) => await ScanAsync();
+
+        // Слушаем события Windows о подключении/отключении USB и Bluetooth
+        _watcher = new DeviceArrivalWatcher(Handle, () => _ = ScanAsync());
 
         SyncTrayIcons();
         _ = ScanAsync();
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        _watcher?.HandleWndProc(ref m);
+        base.WndProc(ref m);
     }
 
     protected override void SetVisibleCore(bool value) =>
@@ -178,7 +210,10 @@ public sealed class MainForm : Form
     private void ExitApplication()
     {
         _isExiting = true;
-        _pollTimer.Stop();
+        _rareRefreshTimer.Stop();
+        _rareRefreshTimer.Dispose();
+        _showWaitHandle.Unregister(null);
+        _watcher.Dispose();
         ClearTrayIcons();
         _engine.Dispose();
         Application.Exit();
@@ -194,7 +229,8 @@ public sealed class MainForm : Form
         {
             IReadOnlyList<DeviceBatteryInfo> found = await Task.Run(() => _engine.ScanAll());
             _devices = found
-                .OrderBy(d => d.Kind)
+                .OrderByDescending(d => d.IsConnected)
+                .ThenBy(d => d.Kind)
                 .ThenBy(d => d.Name)
                 .ToList();
             UpdateUi();
@@ -208,9 +244,11 @@ public sealed class MainForm : Form
 
     private void UpdateUi()
     {
-        if (_devices.Count > 0 && (_primaryDeviceId == null || _devices.All(d => d.Id != _primaryDeviceId)))
+        List<DeviceBatteryInfo> connected = _devices.Where(d => d.IsConnected).ToList();
+
+        if (connected.Count > 0 && (_primaryDeviceId == null || connected.All(d => d.Id != _primaryDeviceId)))
         {
-            _primaryDeviceId = (_devices.FirstOrDefault(d => d.Kind == DeviceKind.Mouse) ?? _devices[0]).Id;
+            _primaryDeviceId = (connected.FirstOrDefault(d => d.Kind == DeviceKind.Mouse) ?? connected[0]).Id;
         }
 
         _deviceList.BeginUpdate();
@@ -222,14 +260,15 @@ public sealed class MainForm : Form
             item.SubItems.Add(d.ConnectionType);
             item.SubItems.Add(d.BatteryPercent.HasValue ? $"{d.BatteryPercent}%" : "--");
             item.SubItems.Add(d.StatusNote);
+            if (!d.IsConnected) item.ForeColor = Color.Gray;
             if (d.Id == _primaryDeviceId) item.Selected = true;
             _deviceList.Items.Add(item);
         }
         _deviceList.EndUpdate();
 
-        _lblHeadline.Text = _devices.Count == 0
-            ? "Беспроводные мыши и клавиатуры не найдены"
-            : string.Join("  |  ", _devices.Take(3).Select(d =>
+        _lblHeadline.Text = connected.Count == 0
+            ? "Подключённых беспроводных устройств нет"
+            : string.Join("  |  ", connected.Take(3).Select(d =>
                 $"{d.Name}: {(d.BatteryPercent.HasValue ? d.BatteryPercent + "%" : "--")}"));
 
         SyncTrayIcons();
@@ -237,20 +276,22 @@ public sealed class MainForm : Form
 
     private void SyncTrayIcons()
     {
-        RebuildTrayMenu();
+        // В трей попадают ТОЛЬКО подключённые устройства (IsConnected == true)
+        List<DeviceBatteryInfo> connected = _devices.Where(d => d.IsConnected).ToList();
+        RebuildTrayMenu(connected);
 
         List<DeviceBatteryInfo> targets;
-        if (_devices.Count == 0)
+        if (connected.Count == 0)
         {
             targets = new List<DeviceBatteryInfo>();
         }
         else if (_chkSeparateTrayIcons.Checked)
         {
-            targets = _devices;
+            targets = connected;
         }
         else
         {
-            DeviceBatteryInfo primary = _devices.FirstOrDefault(d => d.Id == _primaryDeviceId) ?? _devices[0];
+            DeviceBatteryInfo primary = connected.FirstOrDefault(d => d.Id == _primaryDeviceId) ?? connected[0];
             targets = new List<DeviceBatteryInfo> { primary };
         }
 
@@ -268,7 +309,8 @@ public sealed class MainForm : Form
 
         if (targets.Count == 0)
         {
-            SetOrUpdateTrayIcon("__EMPTY__", "Мышь/клавиатура не найдена", null, false, DeviceKind.Other);
+            // Одна дежурная иконка, чтобы не терять доступ к меню, когда всё выключено
+            SetOrUpdateTrayIcon("__EMPTY__", "Нет подключённых устройств (клик — проверить)", null, false, DeviceKind.Other);
             return;
         }
 
@@ -309,17 +351,17 @@ public sealed class MainForm : Form
         _trayIcons.Clear();
     }
 
-    private void RebuildTrayMenu()
+    private void RebuildTrayMenu(List<DeviceBatteryInfo> connected)
     {
         _trayMenu.Items.Clear();
 
-        if (_devices.Count == 0)
+        if (connected.Count == 0)
         {
-            _trayMenu.Items.Add(new ToolStripMenuItem("Устройства не найдены") { Enabled = false });
+            _trayMenu.Items.Add(new ToolStripMenuItem("Нет подключённых устройств") { Enabled = false });
         }
         else
         {
-            foreach (DeviceBatteryInfo d in _devices)
+            foreach (DeviceBatteryInfo d in connected)
             {
                 string pct = d.BatteryPercent.HasValue ? $"{d.BatteryPercent}%" : "--";
                 var item = new ToolStripMenuItem($"[{KindToRu(d.Kind)}] {d.Name}: {pct}")
@@ -351,7 +393,7 @@ public sealed class MainForm : Form
             bool next = !StartupManager.IsEnabled();
             StartupManager.SetEnabled(next);
             _chkStartup.Checked = next;
-            RebuildTrayMenu();
+            RebuildTrayMenu(connected);
         };
         _trayMenu.Items.Add(startupItem);
 
@@ -376,6 +418,7 @@ public sealed class MainForm : Form
     {
         DeviceKind.Mouse => "Мышь",
         DeviceKind.Keyboard => "Клавиатура",
+        DeviceKind.Gamepad => "Геймпад",
         _ => "Устройство"
     };
 }
