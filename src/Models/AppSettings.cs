@@ -2,6 +2,20 @@ using System.Text.Json;
 
 namespace WirelessBatteryHub.Models;
 
+public enum TrayIconStyle
+{
+    Badge = 0,
+    CleanDigits = 1,
+    BatteryIcon = 2
+}
+
+public enum AppThemeMode
+{
+    Auto = 0,
+    Dark = 1,
+    Light = 2
+}
+
 public sealed class AppSettings
 {
     public bool MinimizeToTray { get; set; } = true;
@@ -10,6 +24,8 @@ public sealed class AppSettings
     public bool NotifyLowBattery { get; set; } = true;
     public int LowBatteryThreshold { get; set; } = 15;
     public bool NotifyFullCharge { get; set; } = true;
+    public TrayIconStyle TrayStyle { get; set; } = TrayIconStyle.Badge;
+    public AppThemeMode ThemeMode { get; set; } = AppThemeMode.Auto;
     public string? PrimaryDeviceId { get; set; }
     public HashSet<string> HiddenDeviceIds { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, string> CustomNames { get; set; } = new(StringComparer.OrdinalIgnoreCase);
@@ -19,7 +35,6 @@ public sealed class AppSettings
         string portable = Path.Combine(AppContext.BaseDirectory, "settings.json");
         try
         {
-            // Проверяем, доступна ли папка с .exe для записи
             string probe = Path.Combine(AppContext.BaseDirectory, ".write_test");
             if (File.Exists(portable))
             {
