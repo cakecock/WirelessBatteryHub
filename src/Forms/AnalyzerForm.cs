@@ -1,6 +1,7 @@
 using HidSharp;
 using WirelessBatteryHub.Models;
 using WirelessBatteryHub.Providers;
+using WirelessBatteryHub.Services;
 
 namespace WirelessBatteryHub.Forms;
 
@@ -17,11 +18,12 @@ public sealed class AnalyzerForm : Form
     private CancellationTokenSource? _cts;
     private CustomProtocolRule? _detectedDraft;
 
-    public AnalyzerForm()
+    public AnalyzerForm(bool darkTheme = false)
     {
-        Text = "Анализатор неизвестной мыши / клавиатуры (HID)";
+        Text = "Анализатор неизвестной мыши / клавиатуры / геймпада (HID)";
         Size = new Size(720, 500);
         StartPosition = FormStartPosition.CenterParent;
+        Icon = TrayIconRenderer.CreateAppWindowIcon();
 
         var topPanel = new Panel { Dock = DockStyle.Top, Height = 105, Padding = new Padding(10) };
 
@@ -74,6 +76,9 @@ public sealed class AnalyzerForm : Form
         Controls.Add(topPanel);
 
         LoadInterfaces();
+
+        ThemeHelper.ApplyTitleBarTheme(Handle, darkTheme);
+        ThemeHelper.ApplyControlTreeTheme(this, darkTheme);
     }
 
     private void LoadInterfaces()
