@@ -5,6 +5,7 @@ public enum DeviceKind
     Mouse,
     Keyboard,
     Gamepad,
+    Headset,
     Other
 }
 
