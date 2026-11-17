@@ -10,7 +10,7 @@ public static class TrayIconRenderer
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool DestroyIcon(IntPtr hIcon);
 
-    public static Icon CreateBadgeIcon(int? percent, bool isCharging, DeviceKind kind)
+    public static Icon CreateBadgeIcon(int? percent, bool isCharging, DeviceKind kind, bool isSleeping = false)
     {
         Size sz = SystemInformation.SmallIconSize;
         int w = Math.Max(sz.Width, 16);
@@ -23,17 +23,17 @@ public static class TrayIconRenderer
             g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
             g.Clear(Color.Transparent);
 
-            using var bgBrush = new SolidBrush(Color.FromArgb(242, 28, 28, 34));
+            using var bgBrush = new SolidBrush(Color.FromArgb(242, isSleeping ? 42 : 28, isSleeping ? 42 : 28, isSleeping ? 48 : 34));
             g.FillRectangle(bgBrush, 0, 0, w, h);
 
             Color kindColor = kind switch
             {
-                DeviceKind.Mouse => Color.FromArgb(80, 200, 255),     // Бирюзовый (Мышь)
-                DeviceKind.Keyboard => Color.FromArgb(185, 130, 255), // Фиолетовый (Клавиатура)
-                DeviceKind.Gamepad => Color.FromArgb(255, 165, 55),   // Золотой (Геймпад)
+                DeviceKind.Mouse => Color.FromArgb(80, 200, 255),
+                DeviceKind.Keyboard => Color.FromArgb(185, 130, 255),
+                DeviceKind.Gamepad => Color.FromArgb(255, 165, 55),
                 _ => Color.FromArgb(140, 140, 150)
             };
-            using (var topBar = new SolidBrush(kindColor))
+            using (var topBar = new SolidBrush(isSleeping ? Color.FromArgb(120, kindColor) : kindColor))
             {
                 g.FillRectangle(topBar, 1, 0, w - 2, Math.Max(1, h / 10));
             }
@@ -49,7 +49,8 @@ public static class TrayIconRenderer
             {
                 int v = percent.Value;
                 label = v.ToString();
-                if (isCharging) accent = Color.FromArgb(70, 175, 255);
+                if (isSleeping) accent = Color.FromArgb(135, 140, 150);
+                else if (isCharging) accent = Color.FromArgb(70, 175, 255);
                 else if (v <= 15) accent = Color.FromArgb(245, 75, 75);
                 else if (v <= 30) accent = Color.FromArgb(245, 185, 50);
                 else accent = Color.FromArgb(70, 210, 110);
@@ -71,7 +72,7 @@ public static class TrayIconRenderer
 
             float fontSize = label.Length >= 3 ? h * 0.40f : h * 0.48f;
             using var font = new Font("Segoe UI", fontSize, FontStyle.Bold, GraphicsUnit.Pixel);
-            using var textBrush = new SolidBrush(Color.White);
+            using var textBrush = new SolidBrush(isSleeping ? Color.FromArgb(190, 195, 205) : Color.White);
             using var sf = new StringFormat
             {
                 Alignment = StringAlignment.Center,
