@@ -9,6 +9,8 @@ public sealed class MainForm : Form
 {
     private readonly AppSettings _settings;
     private readonly ProtocolAutoEngine _engine = new();
+    private readonly BatteryEstimator _estimator = new();
+    private readonly Dictionary<string, string?> _estimates = new(StringComparer.OrdinalIgnoreCase);
     private readonly DeviceArrivalWatcher _watcher;
     private readonly Dictionary<string, NotifyIcon> _trayIcons = new();
     private readonly ContextMenuStrip _trayMenu = new();
@@ -46,7 +48,7 @@ public sealed class MainForm : Form
         _settings = AppSettings.Load();
         _allowShowWindow = !startMinimized;
 
-        Text = "Wireless Battery Hub — Мыши, Клавиатуры, Геймпады";
+        Text = "Wireless Battery Hub — Мыши, Клавиатуры, Геймпады, Гарнитуры";
         Size = new Size(730, 535);
         MinimumSize = new Size(630, 440);
         StartPosition = FormStartPosition.CenterScreen;
@@ -89,11 +91,11 @@ public sealed class MainForm : Form
             MultiSelect = false,
             ContextMenuStrip = _listContextMenu
         };
-        _deviceList.Columns.Add("Устройство", 230);
+        _deviceList.Columns.Add("Устройство", 220);
         _deviceList.Columns.Add("Тип", 95);
-        _deviceList.Columns.Add("Протокол", 165);
-        _deviceList.Columns.Add("Заряд", 70);
-        _deviceList.Columns.Add("Статус", 130);
+        _deviceList.Columns.Add("Протокол", 160);
+        _deviceList.Columns.Add("Заряд", 65);
+        _deviceList.Columns.Add("Статус", 150);
         _deviceList.SelectedIndexChanged += OnListSelectionChanged;
         _deviceList.DrawColumnHeader += OnDrawListColumnHeader;
         _deviceList.DrawItem += (_, e) => e.DrawDefault = true;
@@ -395,6 +397,9 @@ public sealed class MainForm : Form
                 .ThenBy(GetDisplayName)
                 .ToList();
 
+            foreach (DeviceBatteryInfo d in _devices)
+                _estimates[d.Id] = _estimator.RecordAndEstimate(d);
+
             UpdateUi();
             CheckBatteryNotifications();
         }
@@ -428,7 +433,11 @@ public sealed class MainForm : Form
             item.SubItems.Add(KindToRu(d.Kind));
             item.SubItems.Add(d.ConnectionType);
             item.SubItems.Add(d.BatteryPercent.HasValue ? $"{d.BatteryPercent}%" : "--");
-            item.SubItems.Add(d.StatusNote);
+
+            string statusText = _estimates.TryGetValue(d.Id, out string? est) && est != null
+                ? $"{d.StatusNote} ({est})"
+                : d.StatusNote;
+            item.SubItems.Add(statusText);
 
             if (d.Id == _settings.PrimaryDeviceId) item.Selected = true;
             _deviceList.Items.Add(item);
@@ -507,8 +516,9 @@ public sealed class MainForm : Form
         foreach (DeviceBatteryInfo dev in targets)
         {
             string name = GetDisplayName(dev);
+            string estPart = _estimates.TryGetValue(dev.Id, out string? est) && est != null ? $" · {est}" : "";
             string tip = dev.BatteryPercent.HasValue
-                ? $"{KindToRu(dev.Kind)} {name}: {dev.BatteryPercent}%" +
+                ? $"{KindToRu(dev.Kind)} {name}: {dev.BatteryPercent}%{estPart}" +
                   (dev.IsCharging ? " (зарядка)" : dev.IsSleeping ? " (спит)" : "")
                 : $"{KindToRu(dev.Kind)} {name}: {dev.StatusNote}";
 
@@ -739,6 +749,7 @@ public sealed class MainForm : Form
         DeviceKind.Mouse => "Мышь",
         DeviceKind.Keyboard => "Клавиатура",
         DeviceKind.Gamepad => "Геймпад",
+        DeviceKind.Headset => "Гарнитура",
         _ => "Устройство"
     };
 }
